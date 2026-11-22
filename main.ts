@@ -15,7 +15,7 @@
 // because the upload happens after this check. Replace the placeholder
 // with the real Short URL before submitting.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const BOT_DIR = process.env.MAKEFUN_BOT_DIR ?? '/bot';
@@ -44,6 +44,31 @@ function asString(value: unknown, label: string): string {
   return value;
 }
 
+function validateVideoUrl(url: string): void {
+  // The entry's video must live on YouTube as a Short or a watch page.
+  // Anything else (a placeholder domain, a file host, a typo) is a bad
+  // entry address, so fail loudly instead of copying it to /output.
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    console.error(`VIDEO.json url is not a valid URL: ${url}`);
+    process.exit(1);
+  }
+  const host = parsed.hostname.replace(/^www\./, '');
+  const isShort = host === 'youtube.com' && parsed.pathname.startsWith('/shorts/');
+  const isWatch =
+    host === 'youtube.com' &&
+    parsed.pathname === '/watch' &&
+    parsed.searchParams.has('v');
+  if (!isShort && !isWatch) {
+    console.error(
+      `VIDEO.json url must be a youtube.com/shorts/ or youtube.com/watch?v= URL, got: ${url}`,
+    );
+    process.exit(1);
+  }
+}
+
 function main(): void {
   const video = readJson('VIDEO.json');
   const cut = readJson('cut.json');
@@ -65,12 +90,33 @@ function main(): void {
     console.log(`  ${shot['at']}s: ${shot['note']}`);
   }
 
+  // Cut sanity check: a YouTube Short must be short. The cut plan's
+  // duration has to be a real number of seconds in 1..180, otherwise
+  // the clip plan itself is wrong and the entry should not go out.
+  const duration = cut['duration_seconds'];
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 1 || duration > 180) {
+    console.error(`cut.json duration_seconds must be between 1 and 180 seconds, got: ${duration}`);
+    process.exit(1);
+  }
+  console.log(`cut duration OK: ${duration}s`);
+
+  // The rendered clip is a build artifact, not committed to git, so it
+  // may legitimately be absent next to the repo. Report its size when
+  // it is there; warn and continue when it is not.
+  const clipPath = join(BOT_DIR, 'clip', 'gta6-short.mp4');
+  if (existsSync(clipPath)) {
+    console.log(`clip file: ${clipPath} (${statSync(clipPath).size} bytes)`);
+  } else {
+    console.warn(`WARNING: clip file not found at ${clipPath} (build artifact, not committed)`);
+  }
+
   if (url.includes(PLACEHOLDER)) {
     console.warn(
       'WARNING: VIDEO.json still holds the placeholder address. ' +
         'Upload the clip to YouTube and replace it with the real Short URL before submitting.',
     );
   } else {
+    validateVideoUrl(url);
     console.log(`video: ${url}`);
   }
 
